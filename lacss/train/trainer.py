@@ -6,6 +6,7 @@ import cloudpickle
 import flax.linen as nn
 import jax
 import jax.numpy as jnp
+import orbax
 from flax.training.train_state import TrainState
 from optax import GradientTransformation
 
@@ -57,12 +58,12 @@ class Trainer:
         self.reset()
         self._initialized = True
 
-    def __call__(self, inputs, *, training=None, strategy=None):
+    def __call__(self, inputs, *, strategy=None):
         if strategy is None:
             strategy = self._strategy
 
         predict_fn = strategy.predict
-        preds = predict_fn(self.state, inputs, training=training)
+        preds = predict_fn(self.state, inputs)
         return preds
 
     def train(self, dataset, strategy=None, rng_cols=None):

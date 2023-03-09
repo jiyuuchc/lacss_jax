@@ -65,7 +65,7 @@ class Eager:
             labels,
             rngs,
         )
-        state.apply_gradients(grads=grads)
+        state = state.apply_gradients(grads=grads)
 
         return state, loss_log, preds
 
@@ -109,7 +109,7 @@ class Distributed(Eager):
         )
 
         grads = jax.lax.pmean(grads, axis_name="device")
-        state.apply_gradients(grads=grads)
+        state = state.apply_gradients(grads=grads)
 
         # aggregate logs
         loss_log = jax.tree_map(partial(jax.lax.pmean, axis_name="device"), loss_log)
