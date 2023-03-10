@@ -76,8 +76,9 @@ def seq_choice(wt, w_miss, prev=None, *, key, n_sample=256, resampling=True):
     Args
         wt: ndarray [M x N]
         w_miss: zero or 1d array, if 1d size is [M],
-        n_samples: int optional
         prev: when sampling division, prev is not None, and w_miss represent weight for no-division
+        n_samples: int optional
+        resampling: if set to Flase, the function do not resample, but return samples weights instead
     returns: a single sample
         history: [n_sample, M]
         selected: [n_sample, N]
@@ -122,7 +123,13 @@ def seq_choice(wt, w_miss, prev=None, *, key, n_sample=256, resampling=True):
     history, selected, key, log_weight = jax.lax.fori_loop(
         0,
         n_source - 1,
-        _for_inner,
+        lambda k, state: jax.lax.cond(
+            jnp.any(wt[k] > 0),
+            _for_inner,
+            lambda _, state: state,
+            k,
+            state,
+        ),
         (history, selected, key, log_weight),
     )
 
@@ -144,35 +151,53 @@ def sample_step(key, wts, w_miss, w_nd, n_sub_sample=256):
         wts: [n_samples, n_source, n_target], pad with 0 will ensure all invalid rows return -1
         w_miss: float constant
         w_nd: [n_samples, n_source]
-        target_logit: [n_target]
     Returns:
         history: [n_samples, n_source], -1 means missing
         history_div: [n_samples, n_source], -1 means no division
         selected: [n_samples, n_target], 1/0
     """
     n_sample, n_source, n_target = wts.shape
-    key, k1, k2, k3 = jax.random.split(key, 4)
-    k1 = jax.random.split(k1, n_sample)
-    k2 = jax.random.split(k2, n_sample)
-    k3 = jax.random.split(k3, n_sample)
+    PAD_BLOCK = 32
+
+    padto = (max(n_source, n_target) - 1) // PAD_BLOCK * PAD_BLOCK + PAD_BLOCK
+    padded_wts = jnp.pad(wts, [[0, 0], [0, padto - n_source], [0, padto - n_target]])
+    padded_nd = jnp.pad(w_nd, [[0, 0], [0, padto - n_source]], constant_values=1.0)
 
     w_miss = jnp.asarray(w_miss).repeat(n_sample).reshape([n_sample, 1])
-    history, selected = jax.vmap(seq_choice)(wts, w_miss, key=k1)
-    history_div, selected, weights = jax.vmap(partial(seq_choice, resampling=False))(
-        wts, w_nd, selected, key=k2
-    )
-    weights = jnp.exp(weights)
-    weights /= weights.sum(axis=-1, keepdims=True)
-    rs = jax.vmap(partial(jax.random.choice, a=weights.shape[1]))(k3, p=weights)
 
-    history = history[jnp.arange(n_sample), rs]  # just need one sample
-    history_div = history_div[jnp.arange(n_sample), rs]
-    selected = selected[jnp.arange(n_sample), rs]
+    def _inner(key, wts, w_miss, w_nd):
+        key, k1, k2, k3 = jax.random.split(key, 4)
+        k1 = jax.random.split(k1, n_sample)
+        k2 = jax.random.split(k2, n_sample)
+        k3 = jax.random.split(k3, n_sample)
 
-    reversed = (history == -1) & (history_div != -1)
-    tmp_history = jnp.where(reversed, history_div, history)
-    history_div = jnp.where(reversed, history, history_div)
-    history = tmp_history
+        history, selected = jax.vmap(partial(seq_choice, n_sample=n_sub_sample))(
+            wts,
+            w_miss,
+            key=k1,
+        )
+        history_div, selected, weights = jax.vmap(
+            partial(seq_choice, n_sample=n_sub_sample, resampling=False)
+        )(wts, w_nd, selected, key=k2)
+        weights = jnp.exp(weights)
+        weights /= weights.sum(axis=-1, keepdims=True)
+        rs = jax.vmap(partial(jax.random.choice, a=weights.shape[1]))(k3, p=weights)
+
+        history = history[jnp.arange(n_sample), rs]  # just need one sample
+        history_div = history_div[jnp.arange(n_sample), rs]
+        selected = selected[jnp.arange(n_sample), rs]
+
+        reversed = (history == -1) & (history_div != -1)
+        tmp_history = jnp.where(reversed, history_div, history)
+        history_div = jnp.where(reversed, history, history_div)
+        history = tmp_history
+
+        return history, history_div, selected
+
+    history, history_div, selected = jax.jit(_inner)(key, padded_wts, w_miss, padded_nd)
+    history = history[:, :n_source]
+    history_div = history_div[:, :n_source]
+    selected = selected[:, :n_target]
 
     return history, history_div, selected
 
@@ -188,9 +213,11 @@ def post_process_step(history):
     id1 = history["detections"][-1]["id"]
     id0 = history["detections"][-2]["id"]
 
+    history["detections"][-2]["yx_next"] = yx1
+    history["detections"][-2]["id_next"] = id1
+
     n_target = yx1.shape[0]
 
-    @jax.vmap
     def _update_lifetime(lifetime0, link, div):
         lifetime = jnp.zeros([n_target + 1])
         link_no_div = jnp.where(div != -1, -1, link)
@@ -207,7 +234,7 @@ def post_process_step(history):
 
     yx_all = np.concatenate([yx1, yx0])  # [n_sourc+n_target, 2]
     id_all = np.concatenate([id1, id0])
-    lifetime1 = np.asarray(_update_lifetime(lifetime0, link, div))
+    lifetime1 = np.asarray(jax.vmap(_update_lifetime)(lifetime0, link, div))
     # print(lifetime1.shape)
 
     history["detections"][-1].update(
@@ -243,11 +270,11 @@ class HyperParams:
     gamma: float = 0.1
     div_start_w: float = 50
     div_limit: float = 0.5
-    div_scale: float = 0.3
-    w_miss: float = 0.02
+    div_scale: float = 0.6
+    w_miss: float = 0.01
     logit_scale: float = 1.0
     logit_offset: float = 0.0
-    n_sub_sample: int = 64
+    n_sub_sample: int = 256
 
 
 def track_to_next_frame(key, history, nextframe, hyper_params):
