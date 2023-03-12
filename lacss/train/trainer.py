@@ -23,12 +23,14 @@ class Trainer:
         self,
         model: nn.Module,
         losses: tp.Optional[tp.Union[tp.Sequence[Loss], Loss]] = None,
+        optimizer: GradientTransformation = None,
         seed: int = 42,
         train_strategy: type = strategy.JIT,
     ):
         self.model = model
         self.loss_log = LossLog(losses)
         self.seed = seed if isinstance(seed, jnp.ndarray) else jax.random.PRNGKey(seed)
+        self.optimizer = optimizer
 
         self._strategy = train_strategy
         self._initialized = False
@@ -40,7 +42,10 @@ class Trainer:
     def initialized(self):
         return self._initialized
 
-    def initialize(self, dataset, tx: GradientTransformation):
+    def initialize(self, dataset, tx: GradientTransformation = None):
+
+        if tx is None:
+            tx = self.optimizer
 
         if not self._initialized:
             peek = next(dataset())

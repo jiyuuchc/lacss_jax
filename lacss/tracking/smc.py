@@ -160,8 +160,8 @@ def sample_step(key, wts, w_miss, w_nd, n_sub_sample=256):
     PAD_BLOCK = 32
 
     padto = (max(n_source, n_target) - 1) // PAD_BLOCK * PAD_BLOCK + PAD_BLOCK
-    padded_wts = jnp.pad(wts, [[0, 0], [0, padto - n_source], [0, padto - n_target]])
-    padded_nd = jnp.pad(w_nd, [[0, 0], [0, padto - n_source]], constant_values=1.0)
+    # padded_wts = jnp.pad(wts, [[0, 0], [0, padto - n_source], [0, padto - n_target]])
+    # padded_nd = jnp.pad(w_nd, [[0, 0], [0, padto - n_source]], constant_values=1.0)
 
     w_miss = jnp.asarray(w_miss).repeat(n_sample).reshape([n_sample, 1])
 
@@ -194,7 +194,8 @@ def sample_step(key, wts, w_miss, w_nd, n_sub_sample=256):
 
         return history, history_div, selected
 
-    history, history_div, selected = jax.jit(_inner)(key, padded_wts, w_miss, padded_nd)
+    # history, history_div, selected = jax.jit(_inner)(key, padded_wts, w_miss, padded_nd)
+    history, history_div, selected = _inner(key, wts, w_miss, w_nd)
     history = history[:, :n_source]
     history_div = history_div[:, :n_source]
     selected = selected[:, :n_target]
@@ -274,7 +275,8 @@ class HyperParams:
     w_miss: float = 0.01
     logit_scale: float = 1.0
     logit_offset: float = 0.0
-    n_sub_sample: int = 256
+    missing_logit: float = -0.5
+    n_sub_sample: int = 64
 
 
 def track_to_next_frame(key, history, nextframe, hyper_params):
@@ -341,7 +343,10 @@ def track_to_next_frame(key, history, nextframe, hyper_params):
     )
 
     target_logit = logit * hyper_params.logit_scale + hyper_params.logit_offset
-    weights = jax.nn.softmax((target_logit * selected1).sum(axis=-1))
+    target_logit = (target_logit * selected1).sum(axis=-1)
+    is_missing = (selected0 == 1) & (new_history == -1)
+    target_logit += np.count_nonzero(is_missing, axis=1) * hyper_params.missing_logit
+    weights = jax.nn.softmax(target_logit)
     rs = np.asarray(jax.random.choice(key, n_sample, [n_sample], p=weights))
 
     history["samples"] = jax.tree_map(lambda v: v[rs], history["samples"])
