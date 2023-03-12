@@ -157,9 +157,10 @@ def sample_step(key, wts, w_miss, w_nd, n_sub_sample=256):
         selected: [n_samples, n_target], 1/0
     """
     n_sample, n_source, n_target = wts.shape
-    PAD_BLOCK = 32
 
-    padto = (max(n_source, n_target) - 1) // PAD_BLOCK * PAD_BLOCK + PAD_BLOCK
+    # PAD_BLOCK = 32
+
+    # padto = (max(n_source, n_target) - 1) // PAD_BLOCK * PAD_BLOCK + PAD_BLOCK
     # padded_wts = jnp.pad(wts, [[0, 0], [0, padto - n_source], [0, padto - n_target]])
     # padded_nd = jnp.pad(w_nd, [[0, 0], [0, padto - n_source]], constant_values=1.0)
 
@@ -176,6 +177,8 @@ def sample_step(key, wts, w_miss, w_nd, n_sub_sample=256):
             w_miss,
             key=k1,
         )
+
+        w_nd = w_nd * (wts.sum(axis=-1) + w_miss) + w_miss
         history_div, selected, weights = jax.vmap(
             partial(seq_choice, n_sample=n_sub_sample, resampling=False)
         )(wts, w_nd, selected, key=k2)
@@ -195,10 +198,11 @@ def sample_step(key, wts, w_miss, w_nd, n_sub_sample=256):
         return history, history_div, selected
 
     # history, history_div, selected = jax.jit(_inner)(key, padded_wts, w_miss, padded_nd)
+    # history = history[:, :n_source]
+    # history_div = history_div[:, :n_source]
+    # selected = selected[:, :n_target]
+
     history, history_div, selected = _inner(key, wts, w_miss, w_nd)
-    history = history[:, :n_source]
-    history_div = history_div[:, :n_source]
-    selected = selected[:, :n_target]
 
     return history, history_div, selected
 
@@ -258,20 +262,21 @@ def get_tracking_weights(yx0, yx1, gamma):
     delta = ((yx1[None, :, :] - yx0[:, None, :]) ** 2).sum(
         axis=-1
     )  # [n_source, n_target]
-    wts = jnp.exp(-delta * gamma * gamma)
+    wts = jnp.exp(-delta / 2 * gamma * gamma)
     return wts
 
 
-def compute_div_p(lifetime, start, scale, limit):
-    return jnp.exp((jnp.log(scale) * lifetime)) * (start - limit) + limit
+def compute_div_p(lifetime, avg, scale, limit):
+    p0 = (1 / scale) ** avg
+    return p0 * (scale**lifetime) + limit
 
 
 @dataclasses.dataclass
 class HyperParams:
     gamma: float = 0.1
-    div_start_w: float = 50
-    div_limit: float = 0.5
-    div_scale: float = 0.6
+    div_avg: float = 10.0
+    div_limit: float = 0.1
+    div_scale: float = 0.5
     w_miss: float = 0.01
     logit_scale: float = 1.0
     logit_offset: float = 0.0
@@ -315,7 +320,7 @@ def track_to_next_frame(key, history, nextframe, hyper_params):
 
     w_nd = compute_div_p(
         lifetime,
-        hyper_params.div_start_w,
+        hyper_params.div_avg,
         hyper_params.div_scale,
         hyper_params.div_limit,
     )
