@@ -6,7 +6,6 @@ import cloudpickle
 import flax.linen as nn
 import jax
 import jax.numpy as jnp
-import orbax
 from flax.training.train_state import TrainState
 from optax import GradientTransformation
 
@@ -52,13 +51,7 @@ class Trainer:
             inputs, _, _ = unpack_x_y_sample_weight(peek)
 
             self.seed, key = jax.random.split(self.seed)
-            inputs_obj = Inputs.from_value(inputs)
-            variables = self.model.init(key, *inputs_obj.args, **inputs_obj.kwargs)
-            self.state = TrainState.create(
-                apply_fn=self.model.apply,
-                params=variables["params"],
-                tx=tx,
-            )
+            self.state = self._strategy.init_fn(key, self.model, inputs, tx)
 
         self.reset()
         self._initialized = True
