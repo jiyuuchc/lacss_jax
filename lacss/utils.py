@@ -1,6 +1,10 @@
 import re
 import typing as tp
 
+import numpy as np
+
+from .ops import bboxes_of_patches
+
 InputLike = tp.Union[tp.Any, tp.Tuple[tp.Any, ...], tp.Dict[str, tp.Any], "Inputs"]
 
 
@@ -84,3 +88,54 @@ class Inputs:
             return cls(**value)
         else:
             return cls(value)
+
+
+def _to_str(p):
+    return "".join(p.astype(int).reshape(-1).astype(str).tolist())
+
+
+def format_predictions(pred, mask=None, threshold=0.5):
+    """
+    Args:
+        pred: model output without batch dim
+            instance_output: [n, patch_size, patch_size] float
+            instance_yx, instance_xc: [n, patch_size, patch_size]
+            pred_scores: [n]
+            instance_mask: [n, 1, 1]
+        mask: optional mask selecting cells
+        threshold: float
+    Returns:
+        bboxes: [n, 4] int64
+        encodings: [n] string
+    """
+    patches = np.asarray(pred["instance_output"]) > threshold
+    yc = np.asarray(pred["instance_yc"])
+    xc = np.asarray(pred["instance_xc"])
+    scores = np.asarray(pred["pred_scores"])
+    bboxes = np.asarray(bboxes_of_patches(pred))
+
+    is_valid = pred["instance_mask"].squeeze(axis=(-1, -2))
+    is_valid & patches.any(axis=(1, 2))  # no empty patches
+    if mask is not None:
+        is_valid &= mask
+
+    patches = patches[is_valid]
+    yc = yc[is_valid]
+    xc = xc[is_valid]
+    scores = scores[is_valid]
+
+    encodings = []
+    for (r0, c0, r1, c1), y0, x0, p in zip(bboxes, yc[:, 0, 0], xc[:, 0, 0], patches):
+        roi = p[r0 - y0 : r1 - y0, c0 - x0 : c1 - x0]
+        encodings.append(_to_str(roi))
+
+    n_pixels = np.count_nonzero(patches, axis=(1, 2))
+    yx = np.stack(
+        [
+            (patches * yc).sum(axis=(1, 2)) / n_pixels,
+            (patches * xc).sum(axis=(1, 2)) / n_pixels,
+        ],
+        axis=-1,
+    )  # centroid
+
+    return bboxes, encodings, scores, yx
