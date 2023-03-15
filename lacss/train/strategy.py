@@ -89,7 +89,7 @@ class JIT(Core):
     train_step = jax.jit(Core.train_step)
 
 
-class Distributed(Eager):
+class _Distributed(Eager):
     @classmethod
     def _train_step(
         cls,
@@ -100,7 +100,7 @@ class Distributed(Eager):
         rngs: tp.Optional[dict],
     ) -> tp.Tuple[TrainState, Pytree, tp.Any]:
         # print("JITTTTING")
-        axis_index = jax.lax.axis_index("device")
+        axis_index = jax.lax.axis_index("mapped")
         rngs = jax.tree_util.tree_map(
             lambda key: jax.random.fold_in(key, axis_index), rngs
         )
@@ -123,28 +123,48 @@ class Distributed(Eager):
         state = state.apply_gradients(grads=grads)
 
         # aggregate logs
-        loss_log = jax.tree_map(partial(jax.lax.pmean, axis_name="device"), loss_log)
+        loss_log = jax.tree_map(partial(jax.lax.pmean, axis_name="mapped"), loss_log)
 
         #         # sync batch statistics
         #         model.map(partial(jax.lax.pmean, axis_name="device"), tx.BatchStat, inplace=True)
 
         return state, loss_log, preds
 
-    predict = jax.pmap(
-        Eager.predict,
-        axis_name="device",
-        in_axes=(None, 0),
-    )
-
     @classmethod
     def init_fn(cls, key, model, inputs, tx):
-        inputs = inputs[0]
+        inputs = jax.tree_map(lambda v: v[0], inputs)
         return Eager.init_fn(key, model, inputs, tx)
 
 
-Distributed.train_step = jax.pmap(
-    Distributed._train_step,
-    axis_name="device",
-    in_axes=(None, None, 0, 0, None),
-    out_axes=(None, None, 0),
-)
+class Distributed(_Distributed):
+    train_step = jax.pmap(
+        _Distributed._train_step,
+        axis_name="mapped",
+        in_axes=(None, None, 0, 0, None),
+        out_axes=(None, None, 0),
+    )
+
+    predict = jax.pmap(
+        Eager.predict,
+        axis_name="mapped",
+        in_axes=(None, 0),
+    )
+
+
+class VMapped(_Distributed):
+    train_step = jax.jit(
+        jax.vmap(
+            _Distributed._train_step,
+            axis_name="mapped",
+            in_axes=(None, None, 0, 0, None),
+            out_axes=(None, None, 0),
+        )
+    )
+
+    predict = jax.jit(
+        jax.vmap(
+            Eager.predict,
+            axis_name="mapped",
+            in_axes=(None, 0),
+        )
+    )

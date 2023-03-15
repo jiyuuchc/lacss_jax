@@ -102,9 +102,7 @@ class Loss:
             if weight is not None
             else jnp.array(1.0, dtype=jnp.float32)
         )
-        self._reduction = (
-            reduction if reduction is not None else Reduction.SUM_OVER_BATCH_SIZE
-        )
+        self._reduction = reduction if reduction is not None else Reduction.NONE
         self._labels_filter = (on,) if isinstance(on, (str, int)) else on
         self._signature_f = self.call
 
