@@ -69,7 +69,7 @@ def box_iou_similarity(gt_boxes, boxes):
     intersections = box_intersection(gt_boxes, boxes)
     gt_boxes_areas = box_area(gt_boxes)
     boxes_areas = box_area(boxes)
-    unions = gt_boxes_areas[:, None] + boxes_areas - intersections
+    unions = gt_boxes_areas[..., None] + boxes_areas[..., None, :] - intersections
 
     ious = intersections / (unions + 1e-6)
 
