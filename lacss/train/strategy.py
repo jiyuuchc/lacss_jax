@@ -18,7 +18,6 @@ class Eager:
             {"params": params},
             *inputs_obj.args,
             **inputs_obj.kwargs,
-            training=True,
             rngs=rngs,
         )
 
@@ -119,14 +118,14 @@ class _Distributed(Eager):
             rngs,
         )
 
-        grads = jax.lax.pmean(grads, axis_name="device")
+        grads = jax.lax.pmean(grads, axis_name="mapped")
         state = state.apply_gradients(grads=grads)
 
         # aggregate logs
         loss_log = jax.tree_map(partial(jax.lax.pmean, axis_name="mapped"), loss_log)
 
         #         # sync batch statistics
-        #         model.map(partial(jax.lax.pmean, axis_name="device"), tx.BatchStat, inplace=True)
+        #         model.map(partial(jax.lax.pmean, axis_name="mapped"), tx.BatchStat, inplace=True)
 
         return state, loss_log, preds
 

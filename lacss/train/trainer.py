@@ -64,7 +64,7 @@ class Trainer:
         preds = predict_fn(self.state, inputs)
         return preds
 
-    def train(self, dataset, strategy=None, rng_cols=None):
+    def train(self, dataset, strategy=None, rng_cols=None, **kwargs):
         if strategy is None:
             strategy = self._strategy
 
@@ -76,6 +76,7 @@ class Trainer:
         self.seed, seed = jax.random.split(self.seed)
         for step, data in enumerate(dataset()):
             inputs, labels, _ = unpack_x_y_sample_weight(data)
+
             if rng_cols is not None:
                 key = jax.random.fold_in(seed, step)
                 keys = jax.random.split(key, len(rng_cols))
@@ -83,9 +84,11 @@ class Trainer:
             else:
                 rngs = None
             train_fn = strategy.train_step
-            self.state, self.loss_log, preds = train_fn(
-                self.state, self.loss_log, inputs, labels, rngs
+            state = self.state.replace(apply_fn=partial(self.state.apply_fn, **kwargs))
+            state, self.loss_log, preds = train_fn(
+                state, self.loss_log, inputs, labels, rngs
             )
+            self.state = state.replace(apply_fn=self.state.apply_fn)
 
             batch_logs = self.loss_log.compute()
 

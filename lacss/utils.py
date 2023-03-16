@@ -1,7 +1,9 @@
+import dataclasses
 import re
 import typing as tp
 
 import numpy as np
+from flax import struct
 
 from .ops import bboxes_of_patches
 
@@ -70,24 +72,26 @@ def _get_name(obj) -> str:
         raise ValueError(f"Could not get name for: {obj}")
 
 
-class Inputs:
-    args: tp.Tuple[tp.Any, ...]
-    kwargs: tp.Dict[str, tp.Any]
+class Inputs(struct.PyTreeNode):
+    args: tp.Tuple[tp.Any, ...] = ()
+    kwargs: tp.Dict[str, tp.Any] = dataclasses.field(default_factory=dict)
 
-    def __init__(self, *args, **kwargs):
-        self.args = args
-        self.kwargs = kwargs
+    def update(self, *args, **kwargs):
+        tmp = self.kwargs.copy()
+        tmp.update(kwargs)
+        new_inputs = self.replace(args=self.args + args, kwargs=tmp)
+        return new_inputs
 
     @classmethod
     def from_value(cls, value: InputLike) -> "Inputs":
         if isinstance(value, cls):
             return value
         elif isinstance(value, tuple):
-            return cls(*value)
+            return cls(args=value)
         elif isinstance(value, dict):
-            return cls(**value)
+            return cls(kwargs=value)
         else:
-            return cls(value)
+            return cls(args=(value,))
 
 
 def _to_str(p):
