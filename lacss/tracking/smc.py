@@ -81,7 +81,7 @@ def get_sample_weight(selected, p, p_miss):
 
 def resample_history(history, selected, p, p_miss, *, key):
     n_sample = selected.shape[0]
-    w = weight_history(selected, p, p_miss)
+    w = get_sample_weight(selected, p, p_miss)
     # print(w.shape)
     c = jax.random.choice(key, n_sample, p=w, shape=[n_sample])
     history = history[c]
@@ -213,7 +213,7 @@ def sample_step(key, selected, wts, w_miss, w_nd, n_sub_sample=256):
         key: a single key
         selected: [n_sample, n_source]
         wts: [n_source, n_target], pad with 0 will ensure all invalid rows return -1
-        w_miss: float constant
+        w_miss: [n_source]
         w_nd: [n_samples, n_source]
     Returns:
         history: [n_samples, n_source], -1 means missing
@@ -228,7 +228,6 @@ def sample_step(key, selected, wts, w_miss, w_nd, n_sub_sample=256):
 
     wts = np.array(wts)
     w_nd = np.array(w_nd)
-    w_miss = np.asarray(w_miss).repeat(n_sample * 1).reshape([n_sample, 1])
     selected = np.asarray(selected).astype(bool)
 
     actual_n_source = selected.sum(-1)
@@ -247,6 +246,12 @@ def sample_step(key, selected, wts, w_miss, w_nd, n_sub_sample=256):
     padded_nd = np.stack(
         [
             np.pad(w_nd[k][selected[k]], [0, padto_source - actual_n_source[k]])
+            for k in range(n_sample)
+        ]
+    )
+    w_miss = np.stack(
+        [
+            np.pad(w_miss[selected[k]], [0, padto_source - actual_n_source[k]])
             for k in range(n_sample)
         ]
     )
@@ -314,7 +319,7 @@ def get_tracking_weights(yx0, yx1, gamma):
     delta = ((yx1[None, :, :] - yx0[:, None, :]) ** 2).sum(
         axis=-1
     )  # [n_source, n_target]
-    wts = jnp.exp(-delta / 2 * gamma * gamma) * gamma * gamma
+    wts = jnp.exp(-delta / 2 * gamma * gamma) * gamma * gamma / 0.399
     return wts
 
 
@@ -332,7 +337,8 @@ class HyperParams:
     w_miss: float = 0.1
     logit_scale: float = 1.0
     logit_offset: float = 0.0
-    missing_logit: float = -0.5
+    miss_weight: float = 1.0
+    miss_logit: float = -0.5
     n_sub_sample: int = 256
     p_death: float = 0.02
 
@@ -358,9 +364,17 @@ def track_to_next_frame(key, history, nextframe, hyper_params):
     yx1 = np.asarray(nextframe["yx"])
     id1 = np.asarray(nextframe["id"])
     logit = np.asarray(nextframe["logit"])
+    target_logit = logit * hyper_params.logit_scale + hyper_params.logit_offset
+    miss_logit = (
+        hyper_params.miss_logit * hyper_params.logit_scale + hyper_params.logit_offset
+    )
 
     n_sample, _ = selected0.shape
     wts = get_tracking_weights(yx0, yx1, hyper_params.gamma)  # [n_source, n_target]
+    w_miss = (1 - wts.sum(axis=1)) * np.exp(miss_logit) * hyper_params.miss_weight
+
+    wts = wts * np.exp(target_logit)
+
     w_nd = compute_div_p(
         lifetime,
         hyper_params.div_avg,
@@ -373,7 +387,7 @@ def track_to_next_frame(key, history, nextframe, hyper_params):
         ckey,
         selected0,
         wts,
-        hyper_params.w_miss,
+        w_miss,
         w_nd,
         n_sub_sample=hyper_params.n_sub_sample,
     )
@@ -405,7 +419,6 @@ def track_to_next_frame(key, history, nextframe, hyper_params):
     )
 
     # resample all chains
-    target_logit = logit * hyper_params.logit_scale + hyper_params.logit_offset
     target_logit = (target_logit * selected1).sum(axis=-1)
     target_logit += is_missing.sum(axis=1) * hyper_params.missing_logit
     weights = jax.nn.softmax(target_logit)
