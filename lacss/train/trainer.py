@@ -12,9 +12,7 @@ from optax import GradientTransformation
 from ..utils import Inputs, _get_name
 from . import strategy
 from .data import *
-from .loss import Loss
-from .pytree import Pytree, static_field
-from .wrapper import *
+from .loss import Loss, LossLog
 
 
 class Trainer:
@@ -24,18 +22,20 @@ class Trainer:
         losses: tp.Optional[tp.Union[tp.Sequence[Loss], Loss]] = None,
         optimizer: GradientTransformation = None,
         seed: int = 42,
-        train_strategy: type = strategy.JIT,
+        strategy: type = strategy.JIT,
     ):
         self.model = model
-        self.loss_log = LossLog(losses)
+        self.losses = (losses,) if isinstance(losses, Loss) else losses
         self.seed = seed if isinstance(seed, jnp.ndarray) else jax.random.PRNGKey(seed)
         self.optimizer = optimizer
 
-        self._strategy = train_strategy
+        self._strategy = strategy
         self._initialized = False
 
+        self.reset()
+
     def reset(self):
-        self.loss_log.reset()
+        self.loss_logs = tuple(LossLog(loss) for loss in self.losses)
 
     @property
     def initialized(self):
@@ -64,6 +64,11 @@ class Trainer:
         preds = predict_fn(self.state, inputs)
         return preds
 
+    def compute_loss_log(self):
+        return {
+            loss_log.loss_fn.name: loss_log.compute() for loss_log in self.loss_logs
+        }
+
     def train(self, dataset, strategy=None, rng_cols=None, **kwargs):
         if strategy is None:
             strategy = self._strategy
@@ -85,12 +90,12 @@ class Trainer:
                 rngs = None
             train_fn = strategy.train_step
             state = self.state.replace(apply_fn=partial(self.state.apply_fn, **kwargs))
-            state, self.loss_log, preds = train_fn(
-                state, self.loss_log, inputs, labels, rngs
+            state, self.loss_logs, preds = train_fn(
+                state, self.loss_logs, inputs, labels, rngs
             )
             self.state = state.replace(apply_fn=self.state.apply_fn)
 
-            batch_logs = self.loss_log.compute()
+            batch_logs = self.compute_loss_log()
 
             yield batch_logs
 
@@ -137,6 +142,7 @@ class Trainer:
             )
             for m in metrics:
                 m.update(**kwargs)
+
             yield metrics
 
     def test_and_compute(self, *args, **kwargs):

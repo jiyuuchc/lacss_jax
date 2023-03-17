@@ -133,7 +133,7 @@ def get_model(cmd, config, batchsize, seed):
             losses=loss,
             optimizer=optax.adamw(lr),
             seed=seed,
-            train_strategy=lacss.train.strategy.VMapped,
+            strategy=lacss.train.strategy.VMapped,
         )
 
         init_epoch = 0

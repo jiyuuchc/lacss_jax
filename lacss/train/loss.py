@@ -8,7 +8,7 @@ from enum import Enum
 
 import jax.numpy as jnp
 import numpy as np
-from numpy.lib.arraysetops import isin
+from flax import struct
 
 from ..utils import _get_name
 
@@ -157,3 +157,18 @@ def reduce_loss(
         raise ValueError(f"Invalid reduction '{reduction}'")
 
     return loss * weight
+
+
+class LossLog(struct.PyTreeNode):
+    loss_fn: Loss = struct.field(pytree_node=False)
+    weight: float = 1.0
+    cnt: jnp.ndarray = jnp.array(0.0)
+    sum: jnp.ndarray = jnp.array(0.0)
+
+    def update(self, **kwargs):
+        loss = self.loss_fn(**kwargs) * self.weight
+        new_log = self.replace(cnt=self.cnt + 1, sum=self.sum + loss)
+        return loss, new_log
+
+    def compute(self):
+        return self.sum / self.cnt

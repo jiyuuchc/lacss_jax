@@ -124,6 +124,7 @@ def get_model(cmd, config, batchsize, seed):
             optimizer=optimizer,
             losses=loss,
             seed=seed,
+            strategy=lacss.train.strategy.VMapped,
         )
         init_epoch = 0
 

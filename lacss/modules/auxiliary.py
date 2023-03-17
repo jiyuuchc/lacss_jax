@@ -51,7 +51,7 @@ class AuxForeground(nn.Module):
             x = jax.nn.relu(x)
 
         x = SpatialAttention()(x)
-        x = jax.image.resize(x, orig.shape[:-1] + (x.shape[-1],), "cubic")
+        x = jax.image.resize(x, orig.shape[:-1] + x.shape[-1:], "cubic")
         x = jnp.concatenate([orig, x], axis=-1)
 
         x = nn.Conv(self.n_groups, (3, 3))(x)

@@ -7,12 +7,12 @@ import jax.tree_util as jtu
 from flax.training.train_state import TrainState
 
 from ..utils import Inputs
-from .pytree import Pytree
+from .loss import Loss, LossLog
 
 
 class Eager:
     @classmethod
-    def loss_fn(cls, params, state, loss_log, inputs, labels, rngs):
+    def loss_fn(cls, params, state, loss_logs, inputs, labels, rngs):
         inputs_obj = Inputs.from_value(inputs)
         preds = state.apply_fn(
             {"params": params},
@@ -27,9 +27,10 @@ class Eager:
             **labels,
         )
 
-        total_loss, _ = loss_log.update(**args)
+        losses, loss_logs = zip(*[loss_fn.update(**args) for loss_fn in loss_logs])
+        total_loss = sum(losses)
 
-        return total_loss, (state, loss_log, preds)
+        return total_loss, (state, loss_logs, preds)
 
     @classmethod
     def init_fn(cls, key, model, inputs, tx):
@@ -55,11 +56,11 @@ class Eager:
     def train_step(
         cls,
         state: TrainState,
-        loss_log: Pytree,
+        loss_logs: tp.Dict[str, LossLog],
         inputs: tp.Any,
         labels: tp.Any,
         rngs: tp.Optional[dict],
-    ) -> tp.Tuple[TrainState, Pytree, tp.Any]:
+    ) -> tp.Tuple[TrainState, dict, tp.Any]:
         # print('JIT train_step')
 
         if labels is None:
@@ -67,17 +68,17 @@ class Eager:
         elif not isinstance(labels, dict):
             labels = dict(target=labels)
 
-        grads, (state, loss_log, preds) = jax.grad(cls.loss_fn, has_aux=True)(
+        grads, (state, loss_logs, preds) = jax.grad(cls.loss_fn, has_aux=True)(
             state.params,
             state,
-            loss_log,
+            loss_logs,
             inputs,
             labels,
             rngs,
         )
         state = state.apply_gradients(grads=grads)
 
-        return state, loss_log, preds
+        return state, loss_logs, preds
 
 
 class Core(Eager):
@@ -93,11 +94,11 @@ class _Distributed(Eager):
     def _train_step(
         cls,
         state: TrainState,
-        loss_log: Pytree,
+        loss_logs: tp.Dict[str, LossLog],
         inputs: tp.Any,
         labels: tp.Any,
         rngs: tp.Optional[dict],
-    ) -> tp.Tuple[TrainState, Pytree, tp.Any]:
+    ) -> tp.Tuple[TrainState, tp.Dict[str, LossLog], tp.Any]:
         # print("JITTTTING")
         axis_index = jax.lax.axis_index("mapped")
         rngs = jax.tree_util.tree_map(
@@ -109,10 +110,10 @@ class _Distributed(Eager):
         elif not isinstance(labels, dict):
             labels = dict(target=labels)
 
-        grads, (state, loss_log, preds) = jax.grad(cls.loss_fn, has_aux=True)(
+        grads, (state, loss_logs, preds) = jax.grad(cls.loss_fn, has_aux=True)(
             state.params,
             state,
-            loss_log,
+            loss_logs,
             inputs,
             labels,
             rngs,
@@ -122,12 +123,12 @@ class _Distributed(Eager):
         state = state.apply_gradients(grads=grads)
 
         # aggregate logs
-        loss_log = jax.tree_map(partial(jax.lax.pmean, axis_name="mapped"), loss_log)
+        loss_logs = jax.tree_map(partial(jax.lax.pmean, axis_name="mapped"), loss_logs)
 
         #         # sync batch statistics
         #         model.map(partial(jax.lax.pmean, axis_name="mapped"), tx.BatchStat, inplace=True)
 
-        return state, loss_log, preds
+        return state, loss_logs, preds
 
     @classmethod
     def init_fn(cls, key, model, inputs, tx):
