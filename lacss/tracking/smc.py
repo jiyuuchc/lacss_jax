@@ -420,7 +420,7 @@ def track_to_next_frame(key, history, nextframe, hyper_params):
 
     # resample all chains
     target_logit = (target_logit * selected1).sum(axis=-1)
-    target_logit += is_missing.sum(axis=1) * hyper_params.missing_logit
+    target_logit += is_missing.sum(axis=1) * hyper_params.miss_logit
     weights = jax.nn.softmax(target_logit)
     rs = np.asarray(jax.random.choice(key, n_sample, [n_sample], p=weights))
     history["samples"] = jax.tree_map(lambda v: v[rs], history["samples"])
