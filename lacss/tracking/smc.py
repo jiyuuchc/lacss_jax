@@ -21,23 +21,30 @@ class HyperParams:
     w_miss: float = 0.1
     logit_scale: float = 1.0
     logit_offset: float = 0.0
-    miss_weight: float = 1.0
+    miss_weight: float = 0.01
     miss_logit: float = -0.5
-    n_sub_sample: int = 256
+    n_sub_sample: int = 16
     p_death: float = 0.02
 
 
-def _get_tracking_weights(yx0, yx1, gamma):
+def _get_tracking_weights(yx0, yx1, hp):
+
+    gamma = hp.gamma
+    p_miss = hp.miss_weight
 
     delta = (yx1[None, :, :] - yx0[:, None, :]) ** 2
-    delta = delta.sum(axis=-1)  # [n_source, n_target]
+    delta = delta.sum(axis=-1)
 
-    wts = jnp.exp(-delta / 2 * gamma * gamma) * gamma * gamma / 0.399
+    # wts = jnp.exp(-delta / 2 * gamma * gamma) * gamma * gamma / 0.399
+    wts = jnp.exp(-delta / 2 * gamma * gamma)
 
     # remove invalid rows
     wts = jnp.where(yx0[:, :1] >= 0, wts, 0)
     # remove invalid cols
     wts = jnp.where(yx1[:, 0] >= 0, wts, 0)
+
+    # last col is reserved for tracking missing cell
+    wts = wts.at[:, -1].set(p_miss)
 
     return wts
 
@@ -72,15 +79,17 @@ def track_to_next_frame(key, cur_frame, yxs, hp):
     assert n_loc == cur_frame["parent"].shape[-1]
     assert n_loc == yx1.shape[0]
 
-    tracking_weights = _get_tracking_weights(yx0, yx1, hp.gamma)
-    tracking_weights += _EPS
+    tracking_weights = _get_tracking_weights(yx0, yx1, hp)
+    # tracking_weights += _EPS
 
     choice_fn = jax.vmap(partial(jax.random.choice, a=n_loc))
 
     def _vmapped_choice(k, state):
         tracked, parents, log_sample_weight = state
 
-        w = tracking_weights[k] * (1 - tracked)
+        # masking out already tracked locations.
+        # Last col is special (lost track) so never masked
+        w = tracking_weights[k] * (1 - tracked.at[:, -1].set(False))
         log_sample_weight += jnp.log(w.sum(axis=-1))
 
         ckeys = jax.random.split(jax.random.fold_in(key, k), n_sample)
@@ -135,18 +144,19 @@ def track_to_next_frame(key, cur_frame, yxs, hp):
     # select one sample based on sample_weight
     weight = jnp.exp(log_sample_weight - log_sample_weight.max())
     rs = jax.random.choice(key, n_sample, p=weight / weight.sum())
-
-    next_frame = dict(
-        tracked=tracked[rs],
-        parent=parents[rs],
-        age=jnp.where(
-            to_div[parents[rs]] | (parents[rs] == -1),
-            0,
-            cur_frame["age"][parents[rs]] + 1,
-        ),
+    tracked = tracked[rs].at[-1].set(False)
+    parents = parents[rs].at[-1].set(-1)
+    age = jnp.where(
+        to_div[parents] | tracked == False,
+        0,
+        cur_frame["age"][parents] + 1,
     )
 
-    return next_frame
+    return dict(
+        tracked=tracked,
+        parent=parents,
+        age=age,
+    )
 
 
 def sample_first_frame(df, n_cells, hp, frame_no=1):
